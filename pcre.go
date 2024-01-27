@@ -122,7 +122,6 @@ const (
 	ERROR_BADOPTION      = C.PCRE_ERROR_BADOPTION
 	ERROR_BADMAGIC       = C.PCRE_ERROR_BADMAGIC
 	ERROR_UNKNOWN_OPCODE = C.PCRE_ERROR_UNKNOWN_OPCODE
-	ERROR_UNKNOWN_NODE   = C.PCRE_ERROR_UNKNOWN_NODE
 	ERROR_NOMEMORY       = C.PCRE_ERROR_NOMEMORY
 	ERROR_NOSUBSTRING    = C.PCRE_ERROR_NOSUBSTRING
 	ERROR_MATCHLIMIT     = C.PCRE_ERROR_MATCHLIMIT
@@ -147,8 +146,6 @@ func pcreErrorString(errorCode int) string {
 		return "Bad magic number"
 	case ERROR_UNKNOWN_OPCODE:
 		return "Unknown opcode"
-	case ERROR_UNKNOWN_NODE:
-		return "Unknown node"
 	case ERROR_NOMEMORY:
 		return "No memory"
 	case ERROR_NOSUBSTRING:
@@ -451,7 +448,7 @@ func (m *Matcher) handleReturnCode(rc int) (err error) {
 	case rc >= 0 || rc == C.PCRE_ERROR_PARTIAL:
 		m.matches = true
 		m.partial = rc == ERROR_PARTIAL
-	case C.PCRE_ERROR_NOMATCH:
+	case rc == C.PCRE_ERROR_NOMATCH:
 		m.matches = false
 	default:
 		m.matches = false
