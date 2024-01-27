@@ -60,6 +60,7 @@ package pcre
 import "C"
 
 import (
+	"errors"
 	"fmt"
 	"strconv"
 	"unsafe"
@@ -136,6 +137,47 @@ const (
 	ERROR_JIT_STACKLIMIT = C.PCRE_ERROR_JIT_STACKLIMIT
 )
 
+func pcreErrorString(errorCode int) string {
+	switch errorCode {
+	case ERROR_NOMATCH:
+		return "No match"
+	case ERROR_BADOPTION:
+		return "Bad option"
+	case ERROR_BADMAGIC:
+		return "Bad magic number"
+	case ERROR_UNKNOWN_OPCODE:
+		return "Unknown opcode"
+	case ERROR_UNKNOWN_NODE:
+		return "Unknown node"
+	case ERROR_NOMEMORY:
+		return "No memory"
+	case ERROR_NOSUBSTRING:
+		return "No substring"
+	case ERROR_MATCHLIMIT:
+		return "Match limit reached"
+	case ERROR_CALLOUT:
+		return "Callout"
+	case ERROR_BADUTF8:
+		return "Bad UTF-8"
+	case ERROR_BADUTF8_OFFSET:
+		return "Bad UTF-8 offset"
+	case ERROR_PARTIAL:
+		return "Partial match"
+	case ERROR_BADPARTIAL:
+		return "Bad partial match"
+	case ERROR_RECURSIONLIMIT:
+		return "Recursion limit reached"
+	case ERROR_INTERNAL:
+		return "Internal error"
+	case ERROR_BADCOUNT:
+		return "Bad count"
+	case ERROR_JIT_STACKLIMIT:
+		return "JIT stack limit reached"
+	default:
+		return "Unknown error"
+	}
+}
+
 // Regexp holds a reference to a compiled regular expression.
 // Use Compile or MustCompile to create such objects.
 type Regexp struct {
@@ -206,12 +248,12 @@ func CompileJIT(pattern string, comFlags, jitFlags int) (Regexp, error) {
 }
 
 // MustCompile compiles the pattern.  If compilation fails, panic.
-func MustCompile(pattern string, flags int) (re Regexp) {
-	re, err := Compile(pattern, flags)
-	if err != nil {
+func MustCompile(pattern string, flags int) *Regexp {
+	if re, err := Compile(pattern, flags); err != nil {
 		panic(err)
+	} else {
+		return &re
 	}
-	return
 }
 
 // MustCompileJIT compiles and studies the pattern.  On failure it panics.
@@ -257,7 +299,7 @@ func (re *Regexp) Study(flags int) error {
 }
 
 // Groups returns the number of capture groups in the compiled pattern.
-func (re Regexp) Groups() int {
+func (re *Regexp) Groups() int {
 	if re.ptr == nil {
 		panic("Regexp.Groups: uninitialized")
 	}
@@ -278,39 +320,39 @@ type Matcher struct {
 }
 
 // NewMatcher creates a new matcher object for the given Regexp.
-func (re Regexp) NewMatcher() (m *Matcher) {
-	m = new(Matcher)
-	m.Init(&re)
-	return
+func (re *Regexp) NewMatcher() *Matcher {
+	m := new(Matcher)
+	m.Init(re)
+	return m
 }
 
 // Matcher creates a new matcher object, with the byte slice as subject.
 // It also starts a first match on subject. Test for success with Matches().
-func (re Regexp) Matcher(subject []byte, flags int) (m *Matcher) {
-	m = re.NewMatcher()
-	m.Match(subject, flags)
-	return
+func (re *Regexp) Matcher(subject []byte, flags int) (*Matcher, error) {
+	m := re.NewMatcher()
+	_, err := m.Match(subject, flags)
+	return m, err
 }
 
 // MatcherString creates a new matcher, with the specified subject string.
 // It also starts a first match on subject. Test for success with Matches().
-func (re Regexp) MatcherString(subject string, flags int) (m *Matcher) {
-	m = re.NewMatcher()
-	m.MatchString(subject, flags)
-	return
+func (re *Regexp) MatcherString(subject string, flags int) (*Matcher, error) {
+	m := re.NewMatcher()
+	_, err := m.MatchString(subject, flags)
+	return m, err
 }
 
 // Reset switches the matcher object to the specified regexp and subject.
 // It also starts a first match on subject.
-func (m *Matcher) Reset(re Regexp, subject []byte, flags int) bool {
-	m.Init(&re)
+func (m *Matcher) Reset(re *Regexp, subject []byte, flags int) (bool, error) {
+	m.Init(re)
 	return m.Match(subject, flags)
 }
 
 // ResetString switches the matcher object to the given regexp and subject.
 // It also starts a first match on subject.
-func (m *Matcher) ResetString(re Regexp, subject string, flags int) bool {
-	m.Init(&re)
+func (m *Matcher) ResetString(re *Regexp, subject string, flags int) (bool, error) {
+	m.Init(re)
 	return m.MatchString(subject, flags)
 }
 
@@ -338,27 +380,25 @@ var nullbyte = []byte{0}
 // Match tries to match the specified byte slice to
 // the current pattern by calling Exec and collects the result.
 // Returns true if the match succeeds.
-func (m *Matcher) Match(subject []byte, flags int) bool {
+func (m *Matcher) Match(subject []byte, flags int) (bool, error) {
 	if m.re.ptr == nil {
 		panic("Matcher.Match: uninitialized")
 	}
 	rc := m.Exec(subject, flags)
-	m.matches = matched(rc)
-	m.partial = (rc == ERROR_PARTIAL)
-	return m.matches
+	err := m.handleReturnCode(rc)
+	return m.matches, err
 }
 
 // MatchString tries to match the specified subject string to
 // the current pattern by calling ExecString and collects the result.
 // Returns true if the match succeeds.
-func (m *Matcher) MatchString(subject string, flags int) bool {
+func (m *Matcher) MatchString(subject string, flags int) (bool, error) {
 	if m.re.ptr == nil {
 		panic("Matcher.MatchString: uninitialized")
 	}
 	rc := m.ExecString(subject, flags)
-	m.matches = matched(rc)
-	m.partial = (rc == ERROR_PARTIAL)
-	return m.matches
+	err := m.handleReturnCode(rc)
+	return m.matches, err
 }
 
 // Exec tries to match the specified byte slice to
@@ -406,16 +446,19 @@ func (m *Matcher) exec(subjectptr *C.char, length, flags int) int {
 }
 
 // matched checks the return code of a pattern match for success.
-func matched(rc int) bool {
+func (m *Matcher) handleReturnCode(rc int) (err error) {
 	switch {
 	case rc >= 0 || rc == C.PCRE_ERROR_PARTIAL:
-		return true
-	case rc == C.PCRE_ERROR_NOMATCH:
-		return false
-	case rc == C.PCRE_ERROR_BADOPTION:
-		panic("PCRE.Match: invalid option flag")
+		m.matches = true
+		m.partial = rc == ERROR_PARTIAL
+	case C.PCRE_ERROR_NOMATCH:
+		m.matches = false
+	default:
+		m.matches = false
+		err = errors.New(pcreErrorString(rc))
 	}
-	panic("unexpected return code from pcre_exec: " + strconv.Itoa(rc))
+
+	return err
 }
 
 // Matches returns true if a previous call to Matcher, MatcherString, Reset,
@@ -586,31 +629,42 @@ func (m *Matcher) NamedPresent(group string) (bool, error) {
 
 // FindIndex returns the start and end of the first match,
 // or nil if no match.  loc[0] is the start and loc[1] is the end.
-func (re *Regexp) FindIndex(bytes []byte, flags int) (loc []int) {
-	m := re.Matcher(bytes, flags)
-	if m.Matches() {
-		loc = []int{int(m.ovector[0]), int(m.ovector[1])}
-		return
+func (re *Regexp) FindIndex(bytes []byte, flags int) ([]int, error) {
+	m, err := re.Matcher(bytes, flags)
+	if err != nil {
+		return nil, err
 	}
-	return nil
+	if m.Matches() {
+		return []int{int(m.ovector[0]), int(m.ovector[1])}, nil
+	}
+	return nil, nil
 }
 
 // ReplaceAll returns a copy of a byte slice
 // where all pattern matches are replaced by repl.
-func (re Regexp) ReplaceAll(bytes, repl []byte, flags int) []byte {
-	m := re.Matcher(bytes, flags)
-	r := []byte{}
+func (re *Regexp) ReplaceAll(bytes, repl []byte, flags int) (r []byte, err error) {
+	m, err := re.Matcher(bytes, flags)
+	if err != nil {
+		return nil, err
+	}
+
 	for m.matches {
 		r = append(append(r, bytes[:m.ovector[0]]...), repl...)
 		bytes = bytes[m.ovector[1]:]
-		m.Match(bytes, flags)
+		if _, err := m.Match(bytes, flags); err != nil {
+			break
+		}
 	}
-	return append(r, bytes...)
+	return append(r, bytes...), err
 }
 
 // ReplaceAllString is equivalent to ReplaceAll with string return type.
-func (re Regexp) ReplaceAllString(in, repl string, flags int) string {
-	return string(re.ReplaceAll([]byte(in), []byte(repl), flags))
+func (re *Regexp) ReplaceAllString(in, repl string, flags int) (string, error) {
+	r, err := re.ReplaceAll([]byte(in), []byte(repl), flags)
+	if err != nil {
+		return "", err
+	}
+	return string(r), nil
 }
 
 // CompileError holds details about a compilation error,
